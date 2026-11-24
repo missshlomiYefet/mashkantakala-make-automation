@@ -1,0 +1,174 @@
+{
+  "scenario": {
+    "id": 8754327,
+    "name": "Integration Tally",
+    "status": "active",
+    "trigger": {
+      "moduleId": 1,
+      "module": "tally:watchNewResponse",
+      "kind": "webhook",
+      "scheduling": { "type": "immediately", "maximum_runs_per_minute": 100 }
+    },
+    "settings": { "sequentialProcessing": true }
+  },
+  "connections": [
+    { "id": 13337724, "app": "google", "usedByModules": [5, 8, 13, 15] },
+    { "id": 13358102, "app": "google-email", "usedByModules": [17, 22, 19, 26, 20, 27, 23, 25, 21] },
+    { "id": 13359857, "app": "slack2", "usedByModules": [28] }
+  ],
+  "flow": [
+    {
+      "id": 1,
+      "module": "tally:watchNewResponse",
+      "purpose": "Instant trigger. Receives each form submission."
+    },
+    {
+      "id": 3,
+      "module": "util:SetVariables",
+      "follows": 1,
+      "purpose": "Creates clean values: email (lowercase), service, isMarketingApproved."
+    },
+    {
+      "id": 5,
+      "module": "google-sheets:filterRows",
+      "label": "Google Sheets - search leads",
+      "follows": 3,
+      "linkFilter": {
+        "name": "Filter 1 - required fields valid",
+        "allConditionsMustPass": [
+          { "a": "{{3.email}}", "operator": "text:contain", "b": "@" },
+          { "a": "{{1.fields.`phone field`}}", "operator": "text:pattern", "b": "^[0-9]{9,10}$" }
+        ]
+      },
+      "purpose": "Search Leads by phone, newest Timestamp first, limit 1."
+    },
+    {
+      "id": 7,
+      "module": "util:TextAggregator",
+      "follows": 5,
+      "purpose": "Collects the Timestamp of the last lead found. Empty text when nothing found."
+    },
+    {
+      "id": 8,
+      "module": "google-sheets:filterRows",
+      "label": "Google Sheets - search if existing contact",
+      "follows": 7,
+      "linkFilter": {
+        "name": "Filter 2 - not a duplicate",
+        "anyGroupMayPass": [
+          [ { "a": "{{7.text}}", "operator": "notexist" } ],
+          [
+            {
+              "a": "{{formatDate(now; \"X\")}}",
+              "operator": "number:greater",
+              "b": "{{formatDate(parseDate(<7.text>; \"YYYY-MM-DD HH:mm:ss\"; \"Asia/Jerusalem\"); \"X\") + 180}}"
+            }
+          ]
+        ]
+      },
+      "purpose": "Search Contacts by Email OR Phone, limit 1."
+    },
+    {
+      "id": 9,
+      "module": "util:TextAggregator",
+      "follows": 8,
+      "purpose": "Collects the Phone of the contact found. Empty text when no contact exists."
+    },
+    {
+      "id": 13,
+      "module": "google-sheets:addRow",
+      "label": "Google Sheets - Add row to Leads",
+      "follows": 9,
+      "purpose": "Logs every non-duplicate submission to the Leads sheet."
+    },
+    {
+      "id": 14,
+      "module": "builtin:BasicRouter",
+      "label": "Router 1",
+      "follows": 13,
+      "routes": [
+        {
+          "index": 0,
+          "name": "Branch A - Contacts",
+          "filter": {
+            "name": "Route A - new contact",
+            "conditions": [ { "a": "{{9.text}}", "operator": "notexist" } ]
+          },
+          "modules": [
+            {
+              "id": 15,
+              "module": "google-sheets:addRow",
+              "label": "Google Sheets - Add row to Contacts"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "name": "Branch B - Service handling (no filter)",
+          "modules": [
+            {
+              "id": 16,
+              "module": "builtin:BasicRouter",
+              "label": "Router 2 - based on service",
+              "routes": [
+                {
+                  "index": 0,
+                  "filter": {
+                    "name": "Route 2 - refinance",
+                    "conditions": [ { "a": "{{3.service}}", "operator": "text:equal", "b": "מחזור משכנתא" } ]
+                  },
+                  "modules": [
+                    { "id": 17, "module": "google-email:sendAnEmail", "purpose": "Team email" },
+                    { "id": 22, "module": "google-email:sendAnEmail", "purpose": "Customer email" }
+                  ]
+                },
+                {
+                  "index": 1,
+                  "filter": {
+                    "name": "Route 3 - Mishtaken",
+                    "conditions": [ { "a": "{{3.service}}", "operator": "text:equal", "b": "מחיר למשתכן" } ]
+                  },
+                  "modules": [
+                    { "id": 19, "module": "google-email:sendAnEmail", "purpose": "Team email" },
+                    { "id": 26, "module": "google-email:sendAnEmail", "purpose": "Customer email" }
+                  ]
+                },
+                {
+                  "index": 2,
+                  "filter": {
+                    "name": "Route 5 - VIP",
+                    "conditions": [ { "a": "{{3.service}}", "operator": "text:equal", "b": "מימון פרויקט יזמי (קבלן)" } ]
+                  },
+                  "modules": [
+                    { "id": 20, "module": "google-email:sendAnEmail", "purpose": "Team email" },
+                    { "id": 28, "module": "slack:CreateMessage", "purpose": "VIP alert to #vip-leads" },
+                    { "id": 27, "module": "google-email:sendAnEmail", "purpose": "Customer email" }
+                  ]
+                },
+                {
+                  "index": 3,
+                  "filter": {
+                    "name": "Route 4 - new mortgage",
+                    "conditions": [ { "a": "{{3.service}}", "operator": "text:equal", "b": "משכנתא חדשה" } ]
+                  },
+                  "modules": [
+                    { "id": 23, "module": "google-email:sendAnEmail", "purpose": "Team email" },
+                    { "id": 25, "module": "google-email:sendAnEmail", "purpose": "Customer email" }
+                  ]
+                },
+                {
+                  "index": 4,
+                  "filter": { "name": "Route 6 - fallback", "conditions": [] },
+                  "isFallback": true,
+                  "modules": [
+                    { "id": 21, "module": "google-email:sendAnEmail", "purpose": "Email to office with the unrecognized service text" }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
